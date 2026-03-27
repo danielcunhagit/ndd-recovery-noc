@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+:root {
+  background-color: transparent !important;
+}
+
+html, body, #root {
+  background-color: transparent !important;
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+/* === ESTILOS PARA O TERMINAL DE LOGS === */
+
+/* Cria uma classe que permite o scroll mas esconde a barra visual */
+.log-scroll-view {
+  /* Habilita o scroll vertical por comportamento */
+  overflow-y: auto !important;
+  
+  /* Esconde para Firefox */
+  scrollbar-width: none;
+  
+  /* Esconde para IE e Edge antigo */
+  -ms-overflow-style: none;
+}
+
+/* Esconde para Chrome, Safari, Opera e Edge novo (baseado em Webkit) */
+.log-scroll-view::-webkit-scrollbar {
+  display: none;
+}

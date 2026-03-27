@@ -1,0 +1,19 @@
+# Dependências do Node (React/Vite)
+node_modules
+dist
+dist-ssr
+*.local
+
+# Dependências do Rust (Tauri)
+src-tauri/target/
+
+# Bancos de dados locais (MUITO IMPORTANTE para não vazar dados de clientes)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Chaves e variáveis de ambiente
+.env
+
+**/target/
