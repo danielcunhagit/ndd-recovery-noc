@@ -67,6 +67,15 @@ const formatPhone = (val: string) => {
 
 export default function App() {
   const [appAlert, setAppAlert] = useState<{visible: boolean, title: string, message: string, type: 'warning' | 'error' | 'success'}>({visible: false, title: "", message: "", type: "warning"});
+  
+  // Efeito que fecha o modal sozinho após 2.5s se for de "Sucesso"
+  useEffect(() => {
+    if (appAlert.visible && appAlert.type === 'success') {
+      const timer = setTimeout(() => setAppAlert(prev => ({...prev, visible: false})), 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [appAlert.visible, appAlert.type]);
+
   const [isDevMode, setIsDevMode] = useState(false); 
   const [gmailPassword, setGmailPassword] = useState(() => localStorage.getItem("gmailPassword") || ""); 
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "AIzaSyBDwmSb5WYFucRLeKs3Jdn1kSm6Alw8xE0"); 
@@ -285,8 +294,19 @@ export default function App() {
     if (!selectedFile) return;
     try {
       await invoke("process_excel_file", { filePath: selectedFile });
-      setCurrentScreen("syncing"); startSyncProcess();
-    } catch (error) { alert(`Erro: ${error}`); }
+      await loadContacts(); // Atualiza a lista na memória
+      
+      if (results.length > 0) {
+        // É REIMPORTAÇÃO: Não roda a API de novo, apenas recalcula pendências e avisa o usuário.
+        await recalculateStatsOnReturn();
+        setAppAlert({visible: true, title: "Base Atualizada", message: "A nova planilha de contatos foi importada com sucesso!", type: "success"});
+        setCurrentScreen("contacts");
+        setSelectedFile(null);
+      } else {
+        // É O PRIMEIRO ACESSO: Dispara a sincronização com o NDD
+        setCurrentScreen("syncing"); startSyncProcess();
+      }
+    } catch (error) { setAppAlert({visible: true, title: "Erro", message: String(error), type: "error"}); }
   };
 
   const executeCleaningAnimation = async (stats: FilteringStats) => {
@@ -428,7 +448,7 @@ export default function App() {
               {/* --- INDICADOR DE VERSÃO PROFISSIONAL --- */}
               <div className="absolute left-6 top-1/2 -translate-y-1/2 flex items-center gap-2 select-none pointer-events-none opacity-60">
                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 drop-shadow-sm">NDD Recovery</span>
-                <span className="px-1.5 py-0.5 bg-slate-200/60 text-slate-500 rounded text-[9px] font-bold font-mono border border-slate-300/50 shadow-sm">v1.0.0</span>
+                <span className="px-1.5 py-0.5 bg-slate-200/60 text-slate-500 rounded text-[9px] font-bold font-mono border border-slate-300/50 shadow-sm">v1.0.1</span>
               </div>
 
               {/* Área de Arraste Invisível (Ocupa o espaço livre e fica por cima do texto) */}
@@ -617,7 +637,7 @@ export default function App() {
                     </motion.div>
 
                     <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-                      <div className="md:col-span-5 flex flex-col space-y-4">
+                      <div className="md:col-span-5 flex flex-col space-y-3">
                         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Settings size={16} className="text-blue-500"/> Retrato da Base NDD</h3>
                         <motion.div variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.1, delayChildren: 0.2 } } }} initial="hidden" animate="show" className="w-full bg-white/60 p-3 rounded-2xl border border-slate-200 shadow-sm space-y-2">
                           <motion.div layoutId="printers-container" transition={{ type: "spring", stiffness: 80, damping: 15 }} className="bg-blue-50/50 border border-blue-100 p-2.5 px-3 rounded-xl flex justify-between items-center">
@@ -740,8 +760,8 @@ export default function App() {
                               onClick={async () => {
                                 try {
                                   const filePath = await save({ filters: [{ name: 'Planilha Excel', extensions: ['xlsx'] }], defaultPath: 'Base_de_Contatos_NDD.xlsx' });
-                                  if (filePath) { alert("✅ " + await invoke<string>("export_contacts_to_excel", { filePath })); }
-                                } catch (err) { alert("❌ Erro ao exportar: " + err); }
+                                  if (filePath) { const msg = await invoke<string>("export_contacts_to_excel", { filePath }); setAppAlert({visible: true, title: "Sucesso", message: msg, type: "success"}); }
+                                  } catch (err) { setAppAlert({visible: true, title: "Falha ao Exportar", message: String(err), type: "error"}); }
                               }} 
                               className="group h-11 px-3.5 bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 rounded-xl text-xs font-bold transition-all duration-300 shadow-sm hover:shadow-md flex items-center justify-center whitespace-nowrap overflow-hidden"
                             >
@@ -990,8 +1010,8 @@ export default function App() {
                           <button 
                             disabled={(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing)}
                             onClick={async () => {
-                              if (!geminiKey || geminiKey.trim() === "") { alert("⚠️ A Chave Gemini não está configurada. Vá em Configurações!"); return; }
-                              if (!gmailPassword || gmailPassword.trim() === "") { alert("⚠️ A Senha do Gmail não está configurada. Vá em Configurações!"); return; }
+                              if (!geminiKey || geminiKey.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Chave Gemini não está configurada. Vá em Configurações!", type: "warning"}); return; }
+                              if (!gmailPassword || gmailPassword.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Senha do Gmail não está configurada. Vá em Configurações!", type: "warning"}); return; }
 
                               // 1. Muda para a nova tela maravilhosa
                               setCurrentScreen("sending_emails");
@@ -1078,8 +1098,17 @@ export default function App() {
                           <div className="mt-4 pt-3 border-t border-slate-200/60 font-mono text-[11px] leading-relaxed truncate text-left">
                             <span className="text-blue-500 mr-2 shrink-0 mt-[1px] font-sans font-extrabold">{'>'}</span>
                             <span className={`inline ${emailDispatchLogs[emailDispatchLogs.length - 1].type === 'error' ? 'text-red-600 font-bold' : (emailDispatchLogs[emailDispatchLogs.length - 1].type === 'success' ? 'text-emerald-700' : 'text-slate-700')}`}>
-                              {/* Apenas o último log faz a animação de máquina de escrever se estiver disparando */}
-                              {isSendingEmail ? <Typewriter text={emailDispatchLogs[emailDispatchLogs.length - 1].msg} /> : emailDispatchLogs[emailDispatchLogs.length - 1].msg}
+                              
+                              {/* O Typewriter já está aí! Só faltava adicionar a div do cursor azul piscando ao lado dele */}
+                              {isSendingEmail ? (
+                                <>
+                                  <Typewriter text={emailDispatchLogs[emailDispatchLogs.length - 1].msg} />
+                                  <motion.div animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.6 }} className="w-1.5 h-3 bg-blue-500 inline-block ml-1 align-middle" />
+                                </>
+                              ) : (
+                                emailDispatchLogs[emailDispatchLogs.length - 1].msg
+                              )}
+
                             </span>
                           </div>
                         )}
@@ -1172,8 +1201,8 @@ export default function App() {
                       <button onClick={async () => {
                         try {
                           await invoke("save_user_profile", { profile: { email, name: profileName, title: profileTitle, department: profileDept, phone: profilePhone } });
-                          alert("Assinatura corporativa salva com sucesso!"); setCurrentScreen("settings");
-                        } catch(e) { alert("Erro ao salvar: " + e); }
+                          setAppAlert({visible: true, title: "Assinatura Salva", message: "Seus dados foram configurados com sucesso!", type: "success"}); setCurrentScreen("settings");
+                          } catch(e) { setAppAlert({visible: true, title: "Erro ao Salvar", message: String(e), type: "error"}); }
                       }} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold mt-8 shadow-md transition-transform hover:scale-[1.02] active:scale-95">
                         Salvar Minha Assinatura
                       </button>
@@ -1256,9 +1285,11 @@ export default function App() {
                           await invoke("save_user_profile", { profile: { email, name: profileName, title: profileTitle, department: profileDept, phone: profilePhone } });
                           setIsEditingGmailPass(false); setIsGmailPassVisible(false);
                           setIsEditingGeminiKey(false); setIsGeminiKeyVisible(false);
-                          alert("Chaves de autenticação e IA salvas com sucesso!"); 
+                          setAppAlert({visible: true, title: "Credenciais Salvas", message: "Suas chaves de segurança foram atualizadas!", type: "success"}); 
                           setCurrentScreen("settings");
-                        } catch(e) { alert("Erro ao salvar: " + e); }
+                        } catch(e) { 
+                          setAppAlert({visible: true, title: "Erro ao Salvar", message: String(e), type: "error"}); 
+                        }
                       }} className="w-full py-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white rounded-xl font-bold mt-8 shadow-md transition-transform hover:scale-[1.02] active:scale-95">
                         Salvar Credenciais
                       </button>
@@ -1290,12 +1321,14 @@ export default function App() {
                 {appAlert.message}
               </div>
               
-              {/* Botão de Ação */}
-              <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-center">
-                <button onClick={() => setAppAlert({...appAlert, visible: false})} className={`w-full py-3 text-white rounded-xl font-bold transition-transform hover:scale-[1.02] active:scale-95 shadow-md ${appAlert.type === 'warning' ? 'bg-amber-500 hover:bg-amber-600' : appAlert.type === 'success' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-slate-800 hover:bg-slate-900'}`}>
-                  Entendi
-                </button>
-              </div>
+              {/* Botão de Ação (Apenas se não for de sucesso, já que o sucesso fecha sozinho) */}
+              {appAlert.type !== 'success' && (
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-center">
+                  <button onClick={() => setAppAlert({...appAlert, visible: false})} className={`w-full py-3 text-white rounded-xl font-bold transition-transform hover:scale-[1.02] active:scale-95 shadow-md ${appAlert.type === 'warning' ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-800 hover:bg-slate-900'}`}>
+                    Entendi
+                  </button>
+                </div>
+              )}
 
             </motion.div>
           </motion.div>
