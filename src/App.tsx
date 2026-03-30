@@ -6,7 +6,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { ask, message } from '@tauri-apps/plugin-dialog';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { Mail, Lock, User, Briefcase, ChevronRight, FileSpreadsheet, RefreshCw, UploadCloud, CheckCircle2, Send, Inbox, Settings, X, Minus, ArrowLeft, AlertTriangle, AlertCircle, Database, Plus, Filter, Phone, Trash2, Server, Printer, Bot, SlidersHorizontal, Pencil, Eye, EyeOff, Search } from "lucide-react";
 import "./App.css";
 
@@ -78,17 +78,22 @@ export default function App() {
 
   const [isDevMode, setIsDevMode] = useState(false); 
   const [gmailPassword, setGmailPassword] = useState(() => localStorage.getItem("gmailPassword") || ""); 
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "AIzaSyBDwmSb5WYFucRLeKs3Jdn1kSm6Alw8xE0"); 
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || ""); 
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailDispatchLogs, setEmailDispatchLogs] = useState<{msg: string, type: 'info' | 'success' | 'error'}[]>([]);
-  const [emailsSentCount, setEmailsSentCount] = useState(0); // <-- Novo contador para a barra de progresso
+  const [emailsSentCount, setEmailsSentCount] = useState(0); 
   
   const [isEditingGmailPass, setIsEditingGmailPass] = useState(() => {
     const saved = localStorage.getItem("gmailPassword");
-    return !saved || saved.trim() === ""; // Se não tiver senha, já nasce aberto!
+    return !saved || saved.trim() === ""; 
   });
   const [isGmailPassVisible, setIsGmailPassVisible] = useState(false);
-  const [isEditingGeminiKey, setIsEditingGeminiKey] = useState(false);
+  
+  // Agora o campo do Gemini também nasce aberto se estiver vazio!
+  const [isEditingGeminiKey, setIsEditingGeminiKey] = useState(() => {
+    const saved = localStorage.getItem("geminiKey");
+    return !saved || saved.trim() === "";
+  });
   const [isGeminiKeyVisible, setIsGeminiKeyVisible] = useState(false);
   
   const [profileName, setProfileName] = useState("");
@@ -119,9 +124,18 @@ export default function App() {
           );
           
           if (querAtualizar) {
-            await message('Baixando a atualização em segundo plano. Por favor, aguarde o aplicativo reiniciar sozinho.', { title: 'Baixando...', kind: 'info' });
-            await update.downloadAndInstall();
-            await relaunch();
+            // Dispara o nosso alerta visual (que fecha sozinho e não trava o código)
+            setAppAlert({visible: true, title: "Baixando Atualização", message: "O download está sendo feito em segundo plano. O sistema será reiniciado em instantes...", type: "success"});
+            
+            try {
+              // Inicia o download e a instalação real
+              await update.downloadAndInstall();
+              // Reinicia o app
+              await relaunch();
+            } catch (err) {
+              // Se der erro de assinatura ou internet, avisa o usuário!
+              setAppAlert({visible: true, title: "Erro na Atualização", message: String(err), type: "error"});
+            }
           }
         }
       } catch (error) {
@@ -393,6 +407,39 @@ export default function App() {
     } catch (err) {
       alert("Erro na sincronização: " + err); setCurrentScreen("login");
     } finally { if (typeof unlisten === 'function') unlisten(); }
+  };
+
+  // --- NOVA LÓGICA DE DETECÇÃO DE ERRO E RETENTATIVA ---
+  const hasCriticalError = !isSendingEmail && emailDispatchLogs.length > 0 && emailDispatchLogs[emailDispatchLogs.length - 1].type === 'error';
+
+  const startEmailDispatch = async () => {
+    if (!geminiKey || geminiKey.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Chave Gemini não está configurada. Vá em Configurações!", type: "warning"}); return; }
+    if (!gmailPassword || gmailPassword.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Senha do Gmail não está configurada. Vá em Configurações!", type: "warning"}); return; }
+
+    setCurrentScreen("sending_emails");
+    setIsSendingEmail(true); 
+    setEmailDispatchLogs([]); 
+    setEmailsSentCount(0);
+    
+    const unlisten = await listen<string>("email-dispatch-event", (event) => {
+      const msg = event.payload;
+      let type: 'info' | 'success' | 'error' = 'info';
+      if (msg.includes("✅")) { type = 'success'; setEmailsSentCount(prev => prev + 1); }
+      if (msg.includes("❌")) type = 'error';
+      setEmailDispatchLogs(prev => [...prev, { msg, type }]);
+    });
+    
+    try {
+      const resposta = await invoke<string>("process_and_send_emails", { 
+        userEmail: email, userPass: gmailPassword.replace(/\s+/g, ''), geminiKey: geminiKey.trim(), offlineDaysThreshold, sendToHostOffline, sendToPrinterOffline, isDevMode, data: results 
+      });
+      setEmailDispatchLogs(prev => [...prev, { msg: `✅ SUCESSO GERAL: ${resposta}`, type: 'success' }]);
+    } catch (err) { 
+      setEmailDispatchLogs(prev => [...prev, { msg: `❌ ERRO CRÍTICO: ${err}`, type: 'error' }]);
+    } finally { 
+      setIsSendingEmail(false); 
+      if (typeof unlisten === 'function') unlisten(); 
+    }
   };
 
   const getWindowSizeClass = () => {
@@ -1009,34 +1056,7 @@ export default function App() {
                           
                           <button 
                             disabled={(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing)}
-                            onClick={async () => {
-                              if (!geminiKey || geminiKey.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Chave Gemini não está configurada. Vá em Configurações!", type: "warning"}); return; }
-                              if (!gmailPassword || gmailPassword.trim() === "") { setAppAlert({visible: true, title: "Ação Requerida", message: "A Senha do Gmail não está configurada. Vá em Configurações!", type: "warning"}); return; }
-
-                              // 1. Muda para a nova tela maravilhosa
-                              setCurrentScreen("sending_emails");
-                              setIsSendingEmail(true); 
-                              setEmailDispatchLogs([]); 
-                              setEmailsSentCount(0);
-                              
-                              // 2. Escuta os eventos e atualiza a barra de progresso
-                              const unlisten = await listen<string>("email-dispatch-event", (event) => {
-                                const msg = event.payload;
-                                let type: 'info' | 'success' | 'error' = 'info';
-                                if (msg.includes("✅")) { type = 'success'; setEmailsSentCount(prev => prev + 1); }
-                                if (msg.includes("❌")) type = 'error';
-                                setEmailDispatchLogs(prev => [...prev, { msg, type }]);
-                              });
-                              
-                              // 3. Executa o Motor Rust no fundo
-                              try {
-                                const resposta = await invoke<string>("process_and_send_emails", { 
-                                  userEmail: email, userPass: gmailPassword.replace(/\s+/g, ''), geminiKey: geminiKey.trim(), offlineDaysThreshold, sendToHostOffline, sendToPrinterOffline, isDevMode, data: results 
-                                });
-                                setEmailDispatchLogs(prev => [...prev, { msg: `✅ SUCESSO GERAL: ${resposta}`, type: 'success' }]);
-                              } catch (err) { setEmailDispatchLogs(prev => [...prev, { msg: `❌ ERRO CRÍTICO: ${err}`, type: 'error' }]);
-                              } finally { setIsSendingEmail(false); if (typeof unlisten === 'function') unlisten(); }
-                            }}
+                            onClick={startEmailDispatch}
                             className={`w-full py-4 rounded-xl font-extrabold shadow-lg transition-transform flex items-center justify-center gap-2 text-sm relative z-10 ${(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing) ? 'bg-slate-200 text-slate-400 cursor-not-allowed pointer-events-none' : (isDevMode ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white hover:scale-[1.02] active:scale-95' : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:scale-[1.02] active:scale-95')}`}
                           >
                             {isSendingEmail ? <RefreshCw size={18} className="animate-spin" /> : <Send size={18}/>} 
@@ -1053,80 +1073,94 @@ export default function App() {
                 {currentScreen === "sending_emails" && (
                   <motion.div key="sending_emails" initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="flex flex-col h-[600px] w-full relative">
                     
-                    {/* Área com Scroll (Permite crescer sem empurrar o botão para fora) */}
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6 shrink-0 log-scroll-view">
+                    {/* Botão Voltar Superior Esquerdo (Aparece se deu erro) */}
+                    <div className="relative flex items-center justify-center mb-2 shrink-0 mt-4">
+                      {!isSendingEmail && (
+                        <motion.button whileHover="hover" onClick={() => setCurrentScreen("email_setup")} className="absolute left-6 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                          <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div> Voltar
+                        </motion.button>
+                      )}
+                    </div>
+
+                    {/* Área com Scroll */}
+                    <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-6 shrink-0 log-scroll-view">
                       <div className="w-full max-w-xl mx-auto space-y-6">
 
-                        {/* Cabeçalho Animado */}
-                      <div className="text-center space-y-3">
-                        <div className="flex justify-center mb-6">
-                          <div className="relative">
-                            <AnimatePresence mode="wait">
-                              {isSendingEmail ? (
-                                <motion.div key="sending" exit={{scale:0}} className="p-5 bg-indigo-100 rounded-full shadow-inner border border-indigo-200">
-                                  <Send size={48} className="text-indigo-600 animate-pulse" />
-                                </motion.div>
-                              ) : (
-                                <motion.div key="done" initial={{scale:0}} animate={{scale:1}} className="p-5 bg-emerald-100 rounded-full shadow-inner border border-emerald-200">
-                                  <CheckCircle2 size={48} className="text-emerald-600" />
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
+                        {/* Cabeçalho Animado (Trata o Erro) */}
+                        <div className="text-center space-y-3">
+                          <div className="flex justify-center mb-6">
+                            <div className="relative">
+                              <AnimatePresence mode="wait">
+                                {isSendingEmail ? (
+                                  <motion.div key="sending" exit={{scale:0}} className="p-5 bg-indigo-100 rounded-full shadow-inner border border-indigo-200">
+                                    <Send size={48} className="text-indigo-600 animate-pulse" />
+                                  </motion.div>
+                                ) : hasCriticalError ? (
+                                  <motion.div key="error" initial={{scale:0}} animate={{scale:1}} className="p-5 bg-red-100 rounded-full shadow-inner border border-red-200">
+                                    <AlertTriangle size={48} className="text-red-600" />
+                                  </motion.div>
+                                ) : (
+                                  <motion.div key="done" initial={{scale:0}} animate={{scale:1}} className="p-5 bg-emerald-100 rounded-full shadow-inner border border-emerald-200">
+                                    <CheckCircle2 size={48} className="text-emerald-600" />
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
                           </div>
-                        </div>
-                        <h2 className="text-3xl font-black text-slate-800 tracking-tight">{isSendingEmail ? "Disparando Notificações..." : "Processo Concluído!"}</h2>
-                        <p className="text-sm font-semibold text-slate-500 max-w-sm mx-auto">
-                          {isSendingEmail ? "A Inteligência Artificial está redigindo, formatando e enviando os e-mails aos clientes." : "Todos os e-mails da fila foram processados e enviados com sucesso."}
-                        </p>
-                      </div>
-
-                      {/* Barra de Progresso Inteligente */}
-                      <div className="bg-white/70 backdrop-blur-md p-6 rounded-3xl shadow-sm border border-slate-200">
-                        <div className="flex justify-between items-end mb-3">
-                          <div>
-                            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Status de Envio</span>
-                            <div className="text-2xl font-black text-indigo-600 leading-none mt-1">{emailsSentCount} <span className="text-base text-slate-400 font-bold">/ {isDevMode ? '4' : dispatchPreview.emails}</span></div>
-                          </div>
-                          <span className="text-sm font-black text-indigo-500">{Math.round((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100)}%</span>
-                        </div>
-                        <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner relative">
-                          <motion.div className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 rounded-full" animate={{ width: `${Math.min((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100, 100)}%` }} transition={{ ease: "linear", duration: 0.4 }} />
+                          <h2 className="text-3xl font-black text-slate-800 tracking-tight">{isSendingEmail ? "Disparando Notificações..." : (hasCriticalError ? "Falha na Operação" : "Processo Concluído!")}</h2>
+                          <p className="text-sm font-semibold text-slate-500 max-w-sm mx-auto">
+                            {isSendingEmail ? "A Inteligência Artificial está redigindo, formatando e enviando os e-mails aos clientes." : (hasCriticalError ? "A operação foi interrompida devido a um erro. Verifique o log abaixo." : "Todos os e-mails da fila foram processados e enviados com sucesso.")}
+                          </p>
                         </div>
 
-                        {/* --- EXIBIÇÃO INTEGRADA DO ÚLTIMO LOG DE DISPARO (NOVA E CLEAN) --- */}
-                        {emailDispatchLogs.length > 0 && (
-                          <div className="mt-4 pt-3 border-t border-slate-200/60 font-mono text-[11px] leading-relaxed truncate text-left">
-                            <span className="text-blue-500 mr-2 shrink-0 mt-[1px] font-sans font-extrabold">{'>'}</span>
-                            <span className={`inline ${emailDispatchLogs[emailDispatchLogs.length - 1].type === 'error' ? 'text-red-600 font-bold' : (emailDispatchLogs[emailDispatchLogs.length - 1].type === 'success' ? 'text-emerald-700' : 'text-slate-700')}`}>
-                              
-                              {/* O Typewriter já está aí! Só faltava adicionar a div do cursor azul piscando ao lado dele */}
-                              {isSendingEmail ? (
-                                <>
-                                  <Typewriter text={emailDispatchLogs[emailDispatchLogs.length - 1].msg} />
-                                  <motion.div animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.6 }} className="w-1.5 h-3 bg-blue-500 inline-block ml-1 align-middle" />
-                                </>
-                              ) : (
-                                emailDispatchLogs[emailDispatchLogs.length - 1].msg
-                              )}
-
-                            </span>
+                        {/* Barra de Progresso Inteligente (Fica vermelha no erro) */}
+                        <div className="bg-white/70 backdrop-blur-md p-6 rounded-3xl shadow-sm border border-slate-200">
+                          <div className="flex justify-between items-end mb-3">
+                            <div>
+                              <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Status de Envio</span>
+                              <div className="text-2xl font-black text-indigo-600 leading-none mt-1">{emailsSentCount} <span className="text-base text-slate-400 font-bold">/ {isDevMode ? '4' : dispatchPreview.emails}</span></div>
+                            </div>
+                            <span className={`text-sm font-black ${hasCriticalError ? 'text-red-500' : 'text-indigo-500'}`}>{Math.round((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100)}%</span>
                           </div>
-                        )}
-                      </div>
-                      
-                      {/* --- TODO O BLOCO DElogs (DETAILS) FOI REMOVIDO DAQUI --- */}
+                          <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner relative">
+                            <motion.div className={`h-full rounded-full ${hasCriticalError ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600'}`} animate={{ width: `${Math.min((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100, 100)}%` }} transition={{ ease: "linear", duration: 0.4 }} />
+                          </div>
 
+                          {/* --- EXIBIÇÃO DO LOG DE ERRO / SUCESSO --- */}
+                          {emailDispatchLogs.length > 0 && (
+                            <div className={`mt-4 pt-3 border-t font-mono text-[11px] leading-relaxed text-left break-words whitespace-pre-wrap max-h-32 overflow-y-auto custom-scrollbar select-text ${hasCriticalError ? 'border-red-200/60 text-red-600 font-bold' : 'border-slate-200/60'}`}>
+                              <span className={`mr-2 shrink-0 mt-[1px] font-sans font-extrabold ${hasCriticalError ? 'text-red-500' : 'text-blue-500'}`}>{'>'}</span>
+                              <span className={`inline ${emailDispatchLogs[emailDispatchLogs.length - 1].type === 'error' ? 'text-red-600 font-bold' : (emailDispatchLogs[emailDispatchLogs.length - 1].type === 'success' ? 'text-emerald-700' : 'text-slate-700')}`}>
+                                {isSendingEmail ? (
+                                  <>
+                                    <Typewriter text={emailDispatchLogs[emailDispatchLogs.length - 1].msg} />
+                                    <motion.div animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.6 }} className="w-1.5 h-3 bg-blue-500 inline-block ml-1 align-middle" />
+                                  </>
+                                ) : (
+                                  emailDispatchLogs[emailDispatchLogs.length - 1].msg
+                                )}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        
                       </div>
                     </div>
 
-                    {/* Botão de Retorno Fixo na Base (Always visible e sem sobreposição) */}
+                    {/* Botões Inferiores (Dinâmicos baseados em erro ou sucesso) */}
                     <AnimatePresence>
                       {!isSendingEmail && (
-                        <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-center p-6 pt-3 shrink-0 border-t border-slate-200/60 relative z-10">
-                          <motion.button whileHover="hover" onClick={() => setCurrentScreen("main_panel")} className="px-10 py-3.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-2">
-                            <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div>
-                            Voltar ao Painel Principal
-                          </motion.button>
+                        <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-center gap-4 p-6 pt-3 shrink-0 border-t border-slate-200/60 relative z-10">
+                          {hasCriticalError ? (
+                            <button onClick={startEmailDispatch} className="px-8 py-3.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-2">
+                              <RefreshCw size={18} /> Tentar Novamente
+                            </button>
+                          ) : (
+                            <motion.button whileHover="hover" onClick={() => setCurrentScreen("main_panel")} className="px-10 py-3.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-2">
+                              <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div>
+                              Voltar ao Painel Principal
+                            </motion.button>
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1264,7 +1298,7 @@ export default function App() {
                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Chave da API (Google Gemini)</label>
                         <div className="relative border border-slate-200 rounded-xl bg-slate-50 flex items-center pr-3 group focus-within:ring-2 focus-within:ring-purple-500 focus-within:border-purple-600 transition-all">
                           <Bot className="absolute left-3 text-slate-400" size={16} />
-                          <input type={isGeminiKeyVisible ? "text" : "password"} value={geminiKey} onChange={e => setGeminiKey(e.target.value)} readOnly={!isEditingGeminiKey} className="flex-1 pl-9 p-3 bg-transparent rounded-xl text-sm outline-none transition-all font-mono placeholder:font-sans placeholder:text-slate-300" placeholder="AIzaSy..." />
+                          <input type={isGeminiKeyVisible ? "text" : "password"} value={geminiKey} onChange={e => setGeminiKey(e.target.value)} readOnly={!isEditingGeminiKey} className="flex-1 pl-9 p-3 bg-transparent rounded-xl text-sm outline-none transition-all font-mono placeholder:font-sans placeholder:text-slate-400" placeholder="Digite aqui sua chave da API do Gemini" />
                           <div className="flex items-center gap-1.5 shrink-0 ml-2">
                             {!isEditingGeminiKey ? (
                               <button onClick={() => setIsEditingGeminiKey(true)} className="p-1 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded" title="Editar este campo"><Pencil size={14} /></button>

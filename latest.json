@@ -1,0 +1,11 @@
+{
+  "version": "1.0.1",
+  "notes": "Polimento das janelas do sistema e correcoes no alinhamento do dashboard.",
+  "pub_date": "2026-03-30T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMVMzZ0N2cXI3YUs5NXRsSXhySXpuWW9DZDZ1T00zaXpJTXcyUTczcVNoL1pMUDVrUXAxNkl6UXNLL3lzYWc1QlZ6d0dteWZ3TnZTUmJ4TVduVWVkclcvb3NBZ3lQZ0FzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0ODg4NDYxCWZpbGU6bmRkLXJlY292ZXJ5LWFwcF8xLjAuMV94NjQtc2V0dXAuZXhlCm9aWG1mU0svT25iMGlzdmtvc0lWM21aeVowc3ViQnRISzgyR0NQWVpzYklaNDNZTExoeFZsSzVQMnk4TVFXNjdVcUhacFUxVXZkOW0zdmJJa2ltSUJRPT0K",
+      "url": "https://github.com/danielcunhagit/ndd-recovery-noc/releases/download/v1.0.1/ndd-recovery-app_1.0.1_x64-setup.exe"
+    }
+  }
+}

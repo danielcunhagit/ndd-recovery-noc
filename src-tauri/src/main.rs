@@ -873,6 +873,7 @@ async fn fetch_gemini_template(
     key: &str,
     prompt: &str,
 ) -> Result<String, String> {
+    // 1. Usando um modelo moderno e ativo em 2026
     let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", key);
     let body = serde_json::json!({ "contents": [{ "parts": [{ "text": prompt }] }] });
 
@@ -888,7 +889,8 @@ async fn fetch_gemini_template(
     if let Some(text) = parsed["candidates"][0]["content"]["parts"][0]["text"].as_str() {
         Ok(text.replace("```html", "").replace("```", ""))
     } else {
-        Err("O Gemini não retornou o formato esperado.".to_string())
+        // 2. Mantendo a revelação do erro para pegarmos o culpado!
+        Err(format!("Resposta da API: {}", json_text))
     }
 }
 
@@ -991,9 +993,6 @@ async fn process_and_send_emails(
         department: "".to_string(),
         phone: "".to_string(),
     });
-
-    // MÁGICA CID: Lê o arquivo local e injeta invisivelmente no pacote do e-mail
-    let logo_bytes = include_bytes!("canon_logo.png");
 
     // HTML da Assinatura: Tamanho ajustado (180px), sem linha divisória e alinhamento profissional
     let signature_html = format!(
