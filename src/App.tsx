@@ -2,9 +2,12 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mail, Lock, User, Briefcase, ChevronRight, FileSpreadsheet, RefreshCw, UploadCloud, CheckCircle2, Send, Inbox, Settings, X, Minus, Terminal, ArrowLeft, AlertTriangle, AlertCircle, Database, Plus, Filter, Phone, Trash2, Server, Printer, Bot, SlidersHorizontal, Pencil, Eye, EyeOff, Search } from "lucide-react";
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { ask, message } from '@tauri-apps/plugin-dialog';
+import { Mail, Lock, User, Briefcase, ChevronRight, FileSpreadsheet, RefreshCw, UploadCloud, CheckCircle2, Send, Inbox, Settings, X, Minus, ArrowLeft, AlertTriangle, AlertCircle, Database, Plus, Filter, Phone, Trash2, Server, Printer, Bot, SlidersHorizontal, Pencil, Eye, EyeOff, Search } from "lucide-react";
 import "./App.css";
 
 interface FilteringStats {
@@ -21,7 +24,7 @@ interface Contact {
   nome1: string; nome2: string; nome3: string; consultor: string; codigo_empresa: string;
 }
 
-type Screen = "splash" | "login" | "dashboard" | "main_panel" | "contacts" | "syncing" | "email_setup" | "settings" | "settings_signature" | "settings_auth";
+type Screen = "splash" | "login" | "dashboard" | "main_panel" | "contacts" | "syncing" | "email_setup" | "settings" | "settings_signature" | "settings_auth" | "sending_emails";
 
 const tweenNumber = (start: number, end: number, duration: number, setter: (val: number) => void) => {
   return new Promise<void>(resolve => {
@@ -63,13 +66,18 @@ const formatPhone = (val: string) => {
 };
 
 export default function App() {
-  const [isDevMode, setIsDevMode] = useState(true); 
-  const [gmailPassword, setGmailPassword] = useState(() => localStorage.getItem("gmailPassword") || "idqn ujgi ndar dejm"); 
+  const [appAlert, setAppAlert] = useState<{visible: boolean, title: string, message: string, type: 'warning' | 'error' | 'success'}>({visible: false, title: "", message: "", type: "warning"});
+  const [isDevMode, setIsDevMode] = useState(false); 
+  const [gmailPassword, setGmailPassword] = useState(() => localStorage.getItem("gmailPassword") || ""); 
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "AIzaSyBDwmSb5WYFucRLeKs3Jdn1kSm6Alw8xE0"); 
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailDispatchLogs, setEmailDispatchLogs] = useState<{msg: string, type: 'info' | 'success' | 'error'}[]>([]);
+  const [emailsSentCount, setEmailsSentCount] = useState(0); // <-- Novo contador para a barra de progresso
   
-  const [isEditingGmailPass, setIsEditingGmailPass] = useState(false);
+  const [isEditingGmailPass, setIsEditingGmailPass] = useState(() => {
+    const saved = localStorage.getItem("gmailPassword");
+    return !saved || saved.trim() === ""; // Se não tiver senha, já nasce aberto!
+  });
   const [isGmailPassVisible, setIsGmailPassVisible] = useState(false);
   const [isEditingGeminiKey, setIsEditingGeminiKey] = useState(false);
   const [isGeminiKeyVisible, setIsGeminiKeyVisible] = useState(false);
@@ -82,11 +90,41 @@ export default function App() {
   const [offlineDaysThreshold, setOfflineDaysThreshold] = useState(7);
   const [sendToHostOffline, setSendToHostOffline] = useState(true);
   const [sendToPrinterOffline, setSendToPrinterOffline] = useState(true);
+  const [acknowledgedMissing, setAcknowledgedMissing] = useState(false);
+  const [showMissingList, setShowMissingList] = useState(false);
   const [missingCompsArray, setMissingCompsArray] = useState<string[]>([]);
   const [syncStats, setSyncStats] = useState({ total: 0, totalCompanies: 0, online: 0, offline: 0, offlineCompanies: 0, missingEmails: 0 });
   const [currentScreen, setCurrentScreen] = useState<Screen>("splash");
   const [splashStep, setSplashStep] = useState(0);
   const [results, setResults] = useState<any[]>([]);
+
+  // --- MÁGICA DA ATUALIZAÇÃO AUTOMÁTICA ---
+  useEffect(() => {
+    const verificarAtualizacoes = async () => {
+      try {
+        const update = await check();
+        if (update) {
+          const querAtualizar = await ask(
+            `A Versão ${update.version} do NDD Recovery está disponível!\n\nNota de Atualização:\n${update.body || "Melhorias de estabilidade e segurança."}\n\nDeseja instalar a atualização agora? O aplicativo será reiniciado.`, 
+            { title: 'Nova Atualização Encontrada!', kind: 'info', okLabel: 'Sim, Atualizar', cancelLabel: 'Mais tarde' }
+          );
+          
+          if (querAtualizar) {
+            await message('Baixando a atualização em segundo plano. Por favor, aguarde o aplicativo reiniciar sozinho.', { title: 'Baixando...', kind: 'info' });
+            await update.downloadAndInstall();
+            await relaunch();
+          }
+        }
+      } catch (error) {
+        console.error("Erro silencioso ao checar atualizações:", error);
+      }
+    };
+
+    // Só roda a checagem se não estivermos no modo "splash" para não travar a animação de entrada
+    if (currentScreen === "login" || currentScreen === "dashboard") {
+      verificarAtualizacoes();
+    }
+  }, [currentScreen]);
   
   // --- MÁGICA DO RECÁLCULO EM TEMPO REAL ---
   const dispatchPreview = useMemo(() => {
@@ -151,20 +189,19 @@ export default function App() {
   const [simulatedCompanyCount, setSimulatedCompanyCount] = useState(0);
   const [syncPhase, setSyncPhase] = useState<"downloading" | "transition" | "cleaning">("downloading");
   const [fakeLogs, setFakeLogs] = useState<{text: string, drop: number, isSuccess?: boolean}[]>([]);
-  const [lastStats, setLastStats] = useState<FilteringStats | null>(null);
   
   const logsEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [fakeLogs, emailDispatchLogs]);
 
-  const [provider, setProvider] = useState("CANON");
-  const [email, setEmail] = useState("dcunha@cusa.canon.com");
-  const [password, setPassword] = useState("Desadani123");
+  const [provider, setProvider] = useState(() => localStorage.getItem("nddProvider") || "");
+  const [email, setEmail] = useState(() => localStorage.getItem("nddEmail") || "");
+  const [password, setPassword] = useState(() => localStorage.getItem("nddPassword") || "");
+  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("nddRemember") === "true");
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [progressMsg, setProgressMsg] = useState("");
   const [progressPercent, setProgressPercent] = useState(0);
-  const [isExpanded, setIsExpanded] = useState(false);
 
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -216,6 +253,19 @@ export default function App() {
     e.preventDefault(); setLoginError(""); setIsAuthenticating(true);
     try {
       await invoke("handle_login", { provider, email, password });
+      
+      if (rememberMe) {
+        localStorage.setItem("nddProvider", provider);
+        localStorage.setItem("nddEmail", email);
+        localStorage.setItem("nddPassword", password);
+        localStorage.setItem("nddRemember", "true");
+      } else {
+        localStorage.removeItem("nddProvider");
+        localStorage.removeItem("nddEmail");
+        localStorage.removeItem("nddPassword");
+        localStorage.setItem("nddRemember", "false");
+      }
+
       const hasContacts = await invoke<boolean>("check_has_contacts");
       if (hasContacts) { setCurrentScreen("syncing"); startSyncProcess(); } 
       else setCurrentScreen("dashboard");
@@ -317,7 +367,6 @@ export default function App() {
       setMissingCompsArray(Array.from(missingEmailComps));
       setSyncStats({ total: data.length, totalCompanies: result.stats.final_companies, online: data.length - offline, offline: offline, offlineCompanies: offlineComps.size, missingEmails: missingEmailComps.size });
       setResults(result.data);
-      setLastStats(result.stats); 
 
       await executeCleaningAnimation(result.stats);
 
@@ -330,19 +379,19 @@ export default function App() {
     if (currentScreen === "main_panel") return "max-w-5xl"; 
     // Juntamos o email_setup com os contacts para ambos usarem a tela Larga (max-w-4xl)
     if (currentScreen === "contacts" || currentScreen === "email_setup") return "max-w-4xl";   
-    if (currentScreen === "settings") return "max-w-3xl";   
+    if (currentScreen === "settings" || currentScreen === "sending_emails") return "max-w-3xl";   
     if (currentScreen === "settings_signature" || currentScreen === "settings_auth") return "max-w-2xl"; 
     return "max-w-md"; 
   };
   
 
   return (
-    <main className="w-screen h-screen bg-transparent flex items-center justify-center p-6 text-slate-800 font-sans">
+    <main className="w-screen h-screen bg-transparent flex items-center justify-center p-6 text-slate-800 font-sans pointer-events-none">
       <AnimatePresence mode="wait">
         
         {/* === SPLASH SCREEN === */}
         {currentScreen === "splash" && (
-          <motion.div key="splash" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.1, filter: "blur(10px)" }} transition={{ duration: 0.5 }} className="flex flex-col items-center justify-center space-y-4 p-8 bg-white/90 backdrop-blur-2xl rounded-3xl shadow-2xl border border-white">
+          <motion.div key="splash" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.1, filter: "blur(10px)" }} transition={{ duration: 0.5 }} className="flex flex-col items-center justify-center space-y-4 p-8 bg-white/90 backdrop-blur-2xl rounded-3xl shadow-2xl border border-white pointer-events-auto">
             <div className="relative w-24 h-24 flex items-center justify-center bg-blue-50 rounded-full shadow-inner border border-blue-100">
               <AnimatePresence mode="wait">
                 {splashStep === 0 && <motion.div key="send" initial={{ opacity: 0, x: -20, y: 20 }} animate={{ opacity: 1, x: 0, y: 0 }} exit={{ opacity: 0, x: 20, y: -20 }}><Send size={40} className="text-blue-500" /></motion.div>}
@@ -361,7 +410,7 @@ export default function App() {
 
         {/* === JANELA PRINCIPAL === */}
         {currentScreen !== "splash" && (
-          <motion.div key="app-container" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6 }} className={`w-full ${getWindowSizeClass()} max-h-[96vh] overflow-hidden bg-gradient-to-br ${isDevMode ? 'from-amber-200/90 via-orange-200/70 to-amber-300/90 border-amber-600/50 shadow-amber-950/40' : 'from-blue-50 via-indigo-50/50 to-purple-50 border-white/60 shadow-2xl'} rounded-3xl border overflow-hidden relative transition-all duration-700 ease-in-out`}>            
+          <motion.div key="app-container" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6 }} className={`w-full ${getWindowSizeClass()} max-h-[96vh] overflow-hidden bg-gradient-to-br ${isDevMode ? 'from-amber-200/90 via-orange-200/70 to-amber-300/90 border-amber-600/50 shadow-amber-950/40' : 'from-blue-50 via-indigo-50/50 to-purple-50 border-white/60 shadow-2xl'} rounded-3xl border overflow-hidden relative transition-all duration-700 ease-in-out pointer-events-auto`}>            
             {/* Comentários JSX precisam estar AQUI DENTRO para não quebrar a tela */}
             {/* A janela muda de cor globalmente se o Modo Dev estiver ativo! */}
             {/* Incluímos as telas de settings na lista que aciona a janela grande */}
@@ -375,7 +424,17 @@ export default function App() {
 
             {/* CONTROLES DE JANELA (Arraste e Botões) */}
             <div className="h-14 w-full absolute top-0 left-0 z-50 flex">
-              <div className="flex-1 h-full hover:cursor-grab active:cursor-grabbing" style={{ WebkitAppRegion: "drag" } as any} />
+              
+              {/* --- INDICADOR DE VERSÃO PROFISSIONAL --- */}
+              <div className="absolute left-6 top-1/2 -translate-y-1/2 flex items-center gap-2 select-none pointer-events-none opacity-60">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 drop-shadow-sm">NDD Recovery</span>
+                <span className="px-1.5 py-0.5 bg-slate-200/60 text-slate-500 rounded text-[9px] font-bold font-mono border border-slate-300/50 shadow-sm">v1.0.0</span>
+              </div>
+
+              {/* Área de Arraste Invisível (Ocupa o espaço livre e fica por cima do texto) */}
+              <div className="flex-1 h-full hover:cursor-grab active:cursor-grabbing z-10" style={{ WebkitAppRegion: "drag" } as any} />
+              
+              {/* Botões Minimizar e Fechar */}
               <div className="flex items-center px-4 space-x-1 relative z-[100]" style={{ WebkitAppRegion: "no-drag" } as any}>
                 <button onClick={() => getCurrentWindow().minimize()} className="p-1 rounded-full text-slate-400 hover:text-blue-500 hover:bg-blue-50 transition-colors pointer-events-auto"><Minus size={18} /></button>
                 <button onClick={() => getCurrentWindow().close()} className="p-1 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors pointer-events-auto"><X size={18} /></button>
@@ -394,6 +453,12 @@ export default function App() {
                       <div className="space-y-1"><label className="text-xs font-semibold text-slate-500 uppercase ml-1">Provedor NDD</label><div className="relative"><Briefcase className="absolute left-3 top-3 text-slate-400" size={18} /><input type="text" value={provider} onChange={e => setProvider(e.target.value)} required disabled={isAuthenticating} className="w-full bg-white/60 border border-slate-200 rounded-xl py-2.5 pl-10 pr-4 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm disabled:opacity-50" /></div></div>
                       <div className="space-y-1"><label className="text-xs font-semibold text-slate-500 uppercase ml-1">Email Corporativo</label><div className="relative"><User className="absolute left-3 top-3 text-slate-400" size={18} /><input type="email" value={email} onChange={e => setEmail(e.target.value)} required disabled={isAuthenticating} className="w-full bg-white/60 border border-slate-200 rounded-xl py-2.5 pl-10 pr-4 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm disabled:opacity-50" /></div></div>
                       <div className="space-y-1"><label className="text-xs font-semibold text-slate-500 uppercase ml-1">Senha</label><div className="relative"><Lock className="absolute left-3 top-3 text-slate-400" size={18} /><input type="password" value={password} onChange={e => setPassword(e.target.value)} required disabled={isAuthenticating} className="w-full bg-white/60 border border-slate-200 rounded-xl py-2.5 pl-10 pr-4 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm disabled:opacity-50" /></div></div>
+                      
+                      <div className="flex items-center space-x-2 mt-3 ml-1">
+                        <input type="checkbox" id="rememberMe" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} disabled={isAuthenticating} className="w-4 h-4 text-blue-600 bg-white border-slate-300 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer transition-colors" />
+                        <label htmlFor="rememberMe" className="text-xs font-semibold text-slate-600 cursor-pointer select-none">Lembrar meus dados de acesso</label>
+                      </div>
+
                       <button type="submit" disabled={isAuthenticating} className={`w-full mt-6 text-white font-medium py-3 px-4 rounded-xl flex items-center justify-center space-x-2 transition-all shadow-md ${isAuthenticating ? 'bg-indigo-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 transform hover:scale-[1.02] active:scale-95'}`}>
                         {isAuthenticating ? (<><RefreshCw size={18} className="animate-spin" /><span>Validando credenciais...</span></>) : (<><span>Iniciar Sessão</span><ChevronRight size={18} /></>)}
                       </button>
@@ -406,9 +471,9 @@ export default function App() {
                   <motion.div key="dashboard" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="flex flex-col items-center justify-center text-center relative w-full h-full min-h-[400px]">
                     {results.length > 0 && (
                       <div className="absolute top-0 left-0">
-                        <button onClick={() => setCurrentScreen("main_panel")} className="flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
-                          <motion.div className="mr-1.5" whileHover={{ x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } }}><ArrowLeft size={18} /></motion.div>Voltar
-                        </button>
+                        <motion.button whileHover="hover" onClick={async () => { await loadContacts(); setCurrentScreen("contacts"); }} className="flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                          <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div>Voltar
+                        </motion.button>
                       </div>
                     )}
                     <div className="flex flex-col items-center justify-center w-full max-w-md mx-auto mt-6">
@@ -519,16 +584,27 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex items-center gap-4">
+                        
+                        {/* NOVO BOTÃO DE ACESSO FIXO AOS CONTATOS */}
+                        <button onClick={async () => { 
+                          await loadContacts(); setCurrentScreen("contacts"); setFilterMissingEmail(false); 
+                        }} className="text-xs font-bold text-slate-600 hover:text-indigo-600 flex items-center gap-1.5 bg-white/50 px-3 py-1.5 rounded-lg transition-all transform hover:scale-105 active:scale-95 border border-slate-200 shadow-md">
+                          <User size={14}/> Contatos
+                        </button>
+                        
                         <button onClick={async () => {
                           try {
                             const prof: any = await invoke("get_user_profile", { email: email });
                             setProfileName(prof.name || ""); setProfileTitle(prof.title || ""); setProfileDept(prof.department || ""); setProfilePhone(prof.phone || "");
                           } catch(e) { console.warn("Banco virgem, indo para settings."); }
                           setCurrentScreen("settings"); 
-                        }} className="text-xs font-bold text-slate-600 hover:text-indigo-600 flex items-center gap-1.5 bg-white/50 px-3 py-1.5 rounded-lg transition-colors border border-slate-200 shadow-sm">
+                        }} className="text-xs font-bold text-slate-600 hover:text-indigo-600 flex items-center gap-1.5 bg-white/50 px-3 py-1.5 rounded-lg transition-all transform hover:scale-105 active:scale-95 border border-slate-200 shadow-md">
                           <Settings size={14}/> Configurações
                         </button>
-                        <div onDoubleClick={() => setIsDevMode(!isDevMode)} className="flex items-center gap-2 cursor-pointer select-none" title="Dê um clique duplo para alternar o Modo Desenvolvedor">
+
+                        {/* BOTÃO MODO DEV (Dê um clique duplo para ativar) */}
+                        {/* Removemos o cursor-pointer e o title para esconder a funcionalidade */}
+                        <div onDoubleClick={() => setIsDevMode(!isDevMode)} className="flex items-center gap-2 select-none">
                           <span className="flex h-3 w-3 relative">
                             <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isDevMode ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
                             <span className={`relative inline-flex rounded-full h-3 w-3 ${isDevMode ? 'bg-amber-500' : 'bg-emerald-500'}`}></span>
@@ -544,13 +620,13 @@ export default function App() {
                       <div className="md:col-span-5 flex flex-col space-y-4">
                         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Settings size={16} className="text-blue-500"/> Retrato da Base NDD</h3>
                         <motion.div variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.1, delayChildren: 0.2 } } }} initial="hidden" animate="show" className="w-full bg-white/60 p-3 rounded-2xl border border-slate-200 shadow-sm space-y-2">
-                          <motion.div layoutId="printers-container" transition={{ type: "spring", stiffness: 80, damping: 15 }} className="bg-white border border-slate-200 p-3 rounded-xl flex justify-between items-center shadow-sm relative z-50">
-                            <motion.span layoutId="printers-text" className="text-xs font-semibold text-slate-600">Total impressoras no NDD</motion.span>
-                            <motion.span layoutId="printers-number" className="text-lg font-black text-blue-600">{syncStats.total.toLocaleString('pt-BR')}</motion.span>
+                          <motion.div layoutId="printers-container" transition={{ type: "spring", stiffness: 80, damping: 15 }} className="bg-blue-50/50 border border-blue-100 p-2.5 px-3 rounded-xl flex justify-between items-center">
+                            <motion.span layoutId="printers-text" className="text-[11px] font-semibold text-slate-600">Total impressoras no NDD</motion.span>
+                            <motion.span layoutId="printers-number" className="text-sm font-bold text-blue-600">{syncStats.total.toLocaleString('pt-BR')}</motion.span>
                           </motion.div>
-                          <motion.div layoutId="companies-container" transition={{ type: "spring", stiffness: 80, damping: 15 }} className="bg-white border border-slate-200 p-3 rounded-xl flex justify-between items-center shadow-sm relative z-50">
-                            <motion.span layoutId="companies-text" className="text-xs font-semibold text-slate-600">Empresas ativas no NDD</motion.span>
-                            <motion.span layoutId="companies-number" className="text-lg font-black text-blue-600">{syncStats.totalCompanies.toLocaleString('pt-BR')}</motion.span>
+                          <motion.div layoutId="companies-container" transition={{ type: "spring", stiffness: 80, damping: 15 }} className="bg-indigo-50/50 border border-indigo-100 p-2.5 px-3 rounded-xl flex justify-between items-center">
+                            <motion.span layoutId="companies-text" className="text-[11px] font-semibold text-slate-600">Empresas ativas no NDD</motion.span>
+                            <motion.span layoutId="companies-number" className="text-sm font-bold text-indigo-600">{syncStats.totalCompanies.toLocaleString('pt-BR')}</motion.span>
                           </motion.div>
                           <motion.div variants={{ hidden: { opacity: 0, x: -20 }, show: { opacity: 1, x: 0 } }} className="bg-emerald-50/50 border border-emerald-100 p-2.5 px-3 rounded-xl flex justify-between items-center">
                             <span className="text-[11px] font-semibold text-slate-600">Impressoras online (0 a 7 dias)</span><span className="text-sm font-bold text-emerald-600">{syncStats.online.toLocaleString('pt-BR')}</span>
@@ -562,33 +638,30 @@ export default function App() {
                             <span className="text-[11px] font-semibold text-slate-600">Empresas com equipamentos offline</span><span className="text-sm font-bold text-amber-600">{syncStats.offlineCompanies.toLocaleString('pt-BR')}</span>
                           </motion.div>
                         </motion.div>
-                        <div className="flex gap-2">
-                          <button onClick={async () => { try { alert("✅ " + await invoke<string>("export_to_excel", { data: results })); } catch (err) { alert("❌ " + err); } }} className="flex-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-semibold py-2.5 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-xs">
-                            <FileSpreadsheet size={14} className="text-emerald-600"/> Exportar Base
-                          </button>
-                          <button onClick={() => setCurrentScreen("dashboard")} className="flex-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-semibold py-2.5 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-xs">
-                            <RefreshCw size={14} className="text-blue-600"/> Reimportar
-                          </button>
-                        </div>
                       </div>
 
                       <div className="md:col-span-7 flex flex-col space-y-5">
                         <div className="space-y-3">
                           <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><AlertCircle size={16} className="text-amber-500"/> Pendências e Tarefas</h3>
                           {syncStats.missingEmails > 0 ? (
-                            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
+                             <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 shadow-sm flex items-center justify-between">
                               <div><h4 className="font-bold text-amber-800 text-sm">Contatos Faltantes</h4><p className="text-xs text-amber-700/80 mt-0.5 max-w-xs">{syncStats.missingEmails} empresas offline não possuem e-mail cadastrado. A automação não poderá notificá-las.</p></div>
-                              <button onClick={async () => { try { await invoke("ensure_contacts_exist", { names: missingCompsArray }); await loadContacts(); setCurrentScreen("contacts"); setIsExpanded(true); setFilterMissingEmail(true); } catch (err) { alert("⚠️ Erro:\n" + err); } }} className="py-2 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold shadow-md transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-xs">
+                              <button onClick={async () => { try { await invoke("ensure_contacts_exist", { names: missingCompsArray }); await loadContacts(); setCurrentScreen("contacts"); setFilterMissingEmail(true); } catch (err) { alert("⚠️ Erro:\n" + err); } }} className="py-2 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold shadow-md transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-xs shrink-0">
                                 Resolver Agora <ChevronRight size={14}/>
                               </button>
                             </div>
                           ) : (
-                            <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm flex items-center gap-3">
-                              <div className="p-2 bg-emerald-100 rounded-full"><CheckCircle2 size={20} className="text-emerald-600" /></div>
-                              <div><h4 className="font-bold text-emerald-800 text-sm">Base Impecável</h4><p className="text-xs text-emerald-700/80 mt-0.5">Todas as empresas offline possuem e-mail. Pronto para automação.</p></div>
+                            <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 shadow-sm flex items-center justify-between">
+                              <div className="flex gap-3 items-center">
+                                <div className="p-2 bg-emerald-100 rounded-full shrink-0"><CheckCircle2 size={20} className="text-emerald-600" /></div>
+                                <div><h4 className="font-bold text-emerald-800 text-sm">Base Impecável</h4><p className="text-[11px] text-emerald-700/80 mt-0.5 max-w-[200px]">Todas as empresas offline possuem e-mail. Pronto para automação.</p></div>
+                              </div>
+                              <button onClick={async () => { await loadContacts(); setCurrentScreen("contacts"); setFilterMissingEmail(false); }} className="py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-md transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-xs shrink-0">
+                                Gerenciar Contatos <ChevronRight size={14}/>
+                              </button>
                             </div>
                           )}
-                        </div>
+                        </div> {/* <--- ESTA É A LINHA! Ela fecha o bloco "Pendências e Tarefas" para não vazar */}
 
                         <div className="space-y-3">
                           <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Send size={16} className="text-indigo-500"/> Disparador Automático Gmail</h3>
@@ -609,14 +682,22 @@ export default function App() {
                               try {
                                 const prof: any = await invoke("get_user_profile", { email: email });
                                 if (!prof.name || prof.name.trim() === "" || !prof.phone || prof.phone.trim() === "") {
-                                  alert("⚠️ AÇÃO REQUERIDA:\n\nSua assinatura de e-mail corporativa ainda não está configurada.\n\nPreencha seus dados em 'Configurações' para garantir que os clientes saibam quem está enviando o aviso.");
+                                  setAppAlert({visible: true, title: "Ação Requerida", message: "Sua assinatura corporativa ainda não está configurada. Preencha seus dados agora para garantir que os clientes saibam quem está enviando o aviso.", type: "warning"});
                                   setProfileName(prof.name || ""); setProfileTitle(prof.title || ""); setProfileDept(prof.department || ""); setProfilePhone(prof.phone || "");
-                                  setCurrentScreen("settings");
+                                  setCurrentScreen("settings_signature"); // Joga direto pro formulário!
                                   return;
                                 }
-                              } catch(e) { alert("⚠️ Configure sua assinatura primeiro."); setCurrentScreen("settings"); return; }
+                              } catch(e) { 
+                                setAppAlert({visible: true, title: "Ação Requerida", message: "Sua assinatura corporativa ainda não está configurada. Preencha seus dados agora.", type: "warning"}); 
+                                setCurrentScreen("settings_signature"); 
+                                return; 
+                              }
+                              
+                              // Reseta a trava de segurança ao abrir o painel
+                              setAcknowledgedMissing(false); 
+                              setShowMissingList(false);
                               setCurrentScreen("email_setup");
-                            }} className="w-full py-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-md transition-all flex items-center justify-center gap-2 text-sm">
+                            }} className="w-full py-3 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-lg transition-transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 text-sm">
                               <SlidersHorizontal size={16}/> Configurar Envio de E-mails
                             </button>
                           </div>
@@ -629,16 +710,17 @@ export default function App() {
                 {/* --- TELA DE CONTATOS --- */}
                 {currentScreen === "contacts" && (
                   <motion.div key="contacts" initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="flex flex-col h-[600px] w-full">                    <div className="relative flex items-center justify-center mb-6 shrink-0 mt-2">
-                      <button onClick={async () => { await recalculateStatsOnReturn(); setEditingContact(null); setCurrentScreen("main_panel"); setIsExpanded(false); }} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
-                        <motion.div className="mr-1.5" whileHover={{ x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } }}><ArrowLeft size={18} /></motion.div>Voltar
-                      </button>
+                      <motion.button whileHover="hover" onClick={async () => { await recalculateStatsOnReturn(); setEditingContact(null); setCurrentScreen("main_panel"); }} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                        <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div>Voltar
+                      </motion.button>
                       <h2 className="text-xl font-extrabold text-slate-800 tracking-tight">Contatos</h2>
                     </div>
 
                     {!editingContact && (
                       <div className="flex flex-col gap-3 mb-5 shrink-0">
-                        <div className="flex gap-3">
-                          {/* --- NOVA BARRA DE PESQUISA --- */}
+                        
+                        {/* --- BARRA DE PESQUISA E BOTÕES EXPANSÍVEIS --- */}
+                        <div className="flex gap-2">
                           <div className="relative flex-1">
                             <Search size={16} className="absolute left-3 top-3 text-slate-400" />
                             <input 
@@ -650,11 +732,44 @@ export default function App() {
                             />
                           </div>
                           
-                          <button onClick={() => setEditingContact({ enterprise_name: "", tel: "", email1: "", email2: "", email3: "", nome1: "", nome2: "", nome3: "", consultor: "", codigo_empresa: "" })} className="h-11 px-5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-transform hover:scale-[1.02] active:scale-95 shadow-md flex items-center justify-center gap-2 whitespace-nowrap">
-                            <Plus size={16}/> Novo Contato
-                          </button>
+                          {/* GRUPO DE BOTÕES DE AÇÃO COM HOVER EXPAND */}
+                          <div className="flex gap-2 shrink-0">
+                            
+                            {/* 1. Botão de Exportar */}
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const filePath = await save({ filters: [{ name: 'Planilha Excel', extensions: ['xlsx'] }], defaultPath: 'Base_de_Contatos_NDD.xlsx' });
+                                  if (filePath) { alert("✅ " + await invoke<string>("export_contacts_to_excel", { filePath })); }
+                                } catch (err) { alert("❌ Erro ao exportar: " + err); }
+                              }} 
+                              className="group h-11 px-3.5 bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 rounded-xl text-xs font-bold transition-all duration-300 shadow-sm hover:shadow-md flex items-center justify-center whitespace-nowrap overflow-hidden"
+                            >
+                              <FileSpreadsheet size={16} className="text-emerald-600 shrink-0"/>
+                              <span className="max-w-0 opacity-0 group-hover:max-w-xs group-hover:opacity-100 group-hover:ml-2 transition-all duration-300 text-emerald-700">Exportar</span>
+                            </button>
+
+                            {/* 2. Botão de Reimportar */}
+                            <button 
+                              onClick={() => setCurrentScreen("dashboard")} 
+                              className="group h-11 px-3.5 bg-white border border-slate-200 hover:border-blue-300 hover:bg-blue-50 rounded-xl text-xs font-bold transition-all duration-300 shadow-sm hover:shadow-md flex items-center justify-center whitespace-nowrap overflow-hidden"
+                            >
+                              <RefreshCw size={16} className="text-blue-600 shrink-0"/>
+                              <span className="max-w-0 opacity-0 group-hover:max-w-xs group-hover:opacity-100 group-hover:ml-2 transition-all duration-300 text-blue-700">Reimportar</span>
+                            </button>
+
+                            {/* 3. Botão de Novo Contato */}
+                            <button 
+                              onClick={() => setEditingContact({ enterprise_name: "", tel: "", email1: "", email2: "", email3: "", nome1: "", nome2: "", nome3: "", consultor: "", codigo_empresa: "" })} 
+                              className="group h-11 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white border border-transparent rounded-xl text-xs font-bold transition-all duration-300 shadow-sm hover:shadow-md flex items-center justify-center whitespace-nowrap overflow-hidden"
+                            >
+                              <Plus size={16} className="shrink-0 text-white"/>
+                              <span className="max-w-0 opacity-0 group-hover:max-w-[120px] group-hover:opacity-100 group-hover:ml-2 transition-all duration-300 text-white">Novo Contato</span>
+                            </button>
+                          </div>
                         </div>
 
+                        {/* --- BOTÃO DE FILTRO --- */}
                         <button onClick={() => setFilterMissingEmail(!filterMissingEmail)} className={`w-full h-11 px-4 rounded-xl text-xs font-bold transition-colors border flex items-center justify-center gap-2 shadow-sm hover:shadow-md ${filterMissingEmail ? 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-600'}`}>
                           <AnimatePresence mode="wait">
                             {filterMissingEmail ? (
@@ -735,9 +850,9 @@ export default function App() {
                 {currentScreen === "email_setup" && (
                   <motion.div key="email_setup" initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="flex flex-col h-[600px] w-full relative">
                     <div className="relative flex items-center justify-center mb-6 shrink-0 mt-2">
-                      <button onClick={() => setCurrentScreen("main_panel")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
-                        <motion.div className="mr-1.5" whileHover={{ x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } }}><ArrowLeft size={18} /></motion.div> Voltar
-                      </button>
+                      <motion.button whileHover="hover" onClick={() => setCurrentScreen("main_panel")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                        <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div> Voltar
+                      </motion.button>
                       <h2 className="text-xl font-extrabold text-slate-800 tracking-tight">Setup da Campanha</h2>
                     </div>
 
@@ -749,12 +864,15 @@ export default function App() {
                         
                         {/* Critério de Inatividade */}
                         <div className="bg-white/60 backdrop-blur-sm border border-slate-200 p-5 rounded-3xl shadow-sm">
-                          <div className="flex justify-between items-end mb-4">
-                            <div>
+                          <div className="flex justify-between items-center mb-4">
+                            <div className="pr-4">
                               <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><Settings size={16} className="text-blue-500"/> Critério de Inatividade</h3>
                               <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">A partir de quantos dias sem comunicação devemos notificar o cliente?</p>
                             </div>
-                            <span className="text-2xl font-black text-indigo-600 font-mono bg-indigo-50 px-3 py-1 rounded-xl border border-indigo-100">{offlineDaysThreshold} <span className="text-sm text-indigo-400 font-bold">dias</span></span>
+                            <div className="flex flex-col items-center justify-center bg-indigo-50 min-w-[70px] py-2 rounded-xl border border-indigo-100 shadow-inner shrink-0">
+                              <span className="text-2xl font-black text-indigo-600 font-mono leading-none">{offlineDaysThreshold}</span>
+                              <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest mt-1">dias</span>
+                            </div>
                           </div>
                           <input type="range" min="1" max="30" value={offlineDaysThreshold} onChange={(e) => setOfflineDaysThreshold(Number(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 hover:accent-indigo-500 transition-all mt-2" />
                           <div className="flex justify-between text-[10px] font-bold text-slate-400 mt-3 uppercase tracking-widest"><span>1 Dia</span><span>15 Dias</span><span>30 Dias</span></div>
@@ -782,9 +900,60 @@ export default function App() {
                       </div>
 
                       {/* --- COLUNA DIREITA: RESUMO E AÇÃO --- */}
-                      <div className="md:col-span-5 flex flex-col justify-between bg-white/40 border border-slate-200 rounded-3xl p-5 relative overflow-hidden">
+                      <div className="md:col-span-5 flex flex-col bg-white/40 border border-slate-200 rounded-3xl p-5 relative overflow-hidden">
                         
-                        <div className="space-y-4 relative z-10">
+                        {/* Área com Scroll (Permite crescer a lista sem empurrar o botão para fora) */}
+                        <div className="space-y-4 relative z-10 flex-1 overflow-y-auto pr-2 custom-scrollbar">
+
+                          {/* ALERTA CRÍTICO: Fricção de Segurança para Cadastros Faltantes */}
+                          {syncStats.missingEmails > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col gap-3 shadow-sm transition-all">
+                              <div className="flex gap-3">
+                                <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
+                                <div>
+                                  <h4 className="text-sm font-bold text-amber-800 uppercase tracking-widest">Atenção Crítica: Cadastros Faltantes</h4>
+                                  <p className="text-[11px] text-amber-700/90 leading-relaxed mt-1 whitespace-normal break-words">
+                                    <b>{syncStats.missingEmails} {syncStats.missingEmails === 1 ? 'empresa offline foi ignorada' : 'empresas offline foram ignoradas'}</b> nesta previsão porque não possuem e-mail no banco. O não-envio destas notificações pode impactar a resolução destes equipamentos.
+                                  </p>
+                                  <button onClick={() => setShowMissingList(!showMissingList)} className="text-[10px] font-bold text-amber-600 hover:text-amber-800 underline mt-1.5 flex items-center gap-1 transition-colors">
+                                    {showMissingList ? <EyeOff size={12}/> : <Eye size={12}/>}
+                                    {showMissingList ? 'Ocultar lista de empresas' : 'Ver empresas afetadas'}
+                                  </button>
+                                </div>
+                              </div>
+
+                              <AnimatePresence>
+                                {showMissingList && (
+                                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="bg-white/60 border border-amber-200/50 rounded-lg p-2.5 text-[10px] text-amber-900 font-mono max-h-24 overflow-y-auto custom-scrollbar">
+                                    <ul className="list-disc pl-5 space-y-1">
+                                      {missingCompsArray.map((comp, idx) => (
+                                        <li key={idx} className="truncate" title={comp}>{comp}</li>
+                                      ))}
+                                    </ul>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+
+                              <div className="border-t border-amber-200/60 pt-3 mt-1">
+                                <div 
+                                  onClick={() => setAcknowledgedMissing(!acknowledgedMissing)} 
+                                  className={`p-3 rounded-xl border transition-all duration-300 cursor-pointer flex items-center gap-3 select-none ${acknowledgedMissing ? 'bg-gradient-to-r from-amber-500 to-amber-600 border-amber-600 shadow-md transform scale-[1.02]' : 'bg-white/80 border-amber-300 hover:bg-amber-100 hover:border-amber-400'}`}
+                                >
+                                  <div className={`shrink-0 transition-transform ${acknowledgedMissing ? 'scale-110' : 'scale-100'}`}>
+                                    {acknowledgedMissing ? (
+                                      <CheckCircle2 size={22} className="text-white" />
+                                    ) : (
+                                      <div className="w-[22px] h-[22px] rounded-full border-2 border-amber-300 bg-amber-50/50"></div>
+                                    )}
+                                  </div>
+                                  <span className={`text-[10px] font-extrabold uppercase tracking-wide leading-tight ${acknowledgedMissing ? 'text-white' : 'text-amber-800'}`}>
+                                    Estou ciente e assumo a responsabilidade de liberar o envio parcial
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
                           {/* Mostrador Dinâmico Duplo */}
                           <motion.div layout className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-100/60 rounded-2xl p-5 shadow-sm">
                             <h4 className="font-extrabold text-indigo-900 text-sm flex items-center gap-2 mb-4"><Send size={16} className="text-indigo-600"/> Resumo de Disparos</h4>
@@ -801,54 +970,54 @@ export default function App() {
                             </div>
                           </motion.div>
 
-                          {/* Monitor de Transmissão (Terminal) */}
-                          <AnimatePresence>
-                            {(isSendingEmail || emailDispatchLogs.length > 0) && (
-                              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 180 }} exit={{ opacity: 0, height: 0 }} className="bg-slate-900 border border-slate-700/60 rounded-xl p-4 shadow-inner flex flex-col">
-                                <div className="flex justify-between items-center pb-2 border-b border-slate-700/60 mb-3 shrink-0">
-                                  <div className="flex gap-1.5 items-center"><Terminal size={14} className="text-emerald-400"/> <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Terminal</span></div>
-                                </div>
-                                <div className="flex-1 log-scroll-view text-left space-y-2 pr-2 pb-1 font-mono text-[10px] scroll-smooth">
-                                  {emailDispatchLogs.map((log, i) => (
-                                    <motion.div key={i} initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} className={`leading-relaxed ${log.type === 'error' ? 'text-red-400' : (log.type === 'success' ? 'text-emerald-400' : 'text-slate-300')}`}>
-                                      <span className="text-emerald-600 mr-2 shrink-0">{'>'}</span>{log.msg}
-                                    </motion.div>
-                                  ))}
-                                  <div ref={logsEndRef} className="h-1" />
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-                        </div>
+                        </div> {/* <--- É SÓ ADICIONAR ESTA LINHA AQUI! (Ela fecha a div que permite o scroll) */}
 
-                        {/* Botão Fixo na Parte Inferior da Coluna */}
-                        <div className="pt-4 mt-4 relative z-10">
+                        {/* Botão Fixo na Parte Inferior da Coluna (Sempre visível) */}
+                        <div className="pt-4 mt-2 border-t border-slate-200/60 relative z-10 group shrink-0">
+                           {/* ... O NOVO DIAGNÓSTICO INTELIGENTE MANTÉM-SE INTACTO AQUI ... */}
+                          {((!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing)) && !isSendingEmail && (
+                            <div className="absolute bottom-full mb-4 left-1/2 -translate-x-1/2 w-[260px] bg-slate-800 text-white text-[11px] p-4 rounded-xl shadow-2xl z-50 transition-all pointer-events-none translate-y-2 group-hover:translate-y-0 opacity-0 group-hover:opacity-100">
+                              <div className="flex items-center gap-1.5 mb-2.5 border-b border-slate-700/60 pb-2"><AlertTriangle size={14} className="text-amber-400 shrink-0" /><span className="text-[10px] font-bold text-amber-100 uppercase tracking-widest">Diagnóstico de Envio</span></div>
+                              <div className="text-left text-slate-100 leading-relaxed font-medium">
+                                {!gmailPassword ? (<span><AlertCircle size={12} className="text-amber-400 inline mr-1 mb-0.5"/><span className="text-white font-bold">Senha do Gmail ausente!</span><br/>Vá em Configurações para gerar a sua.</span>) : (syncStats.missingEmails > 0 && !acknowledgedMissing) ? (<span><AlertTriangle size={12} className="text-amber-400 inline mr-1 mb-0.5"/> Tique a caixa acima e <span className="text-white font-bold">assuma a responsabilidade</span> para liberar o disparo.</span>) : (!sendToHostOffline && !sendToPrinterOffline) ? (<span><AlertCircle size={12} className="text-red-400 inline mr-1 mb-0.5"/> <span className="text-white font-bold">Nenhum escopo!</span> Selecione pelo menos um dos métodos acima.</span>) : (<span><CheckCircle2 size={12} className="text-emerald-400 inline mr-1 mb-0.5"/> <span className="text-emerald-300 font-bold">Tudo pronto!</span> Nenhuma pendência para o disparo.</span>)}
+                              </div>
+                              <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 border-x-[6px] border-x-transparent border-t-[8px] border-t-slate-800"></div>
+                            </div>
+                          )}
+
                           {isDevMode && (<div className="absolute -top-7 left-0 w-full flex justify-center"><span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-3 py-1 rounded-t-xl border border-amber-200 border-b-0 flex items-center gap-1 shadow-sm"><Bot size={12}/> Redirecionando para: {email}</span></div>)}
+                          
                           <button 
-                            disabled={(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0}
+                            disabled={(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing)}
                             onClick={async () => {
                               if (!geminiKey || geminiKey.trim() === "") { alert("⚠️ A Chave Gemini não está configurada. Vá em Configurações!"); return; }
                               if (!gmailPassword || gmailPassword.trim() === "") { alert("⚠️ A Senha do Gmail não está configurada. Vá em Configurações!"); return; }
 
-                              setIsSendingEmail(true); setEmailDispatchLogs([]); 
+                              // 1. Muda para a nova tela maravilhosa
+                              setCurrentScreen("sending_emails");
+                              setIsSendingEmail(true); 
+                              setEmailDispatchLogs([]); 
+                              setEmailsSentCount(0);
                               
+                              // 2. Escuta os eventos e atualiza a barra de progresso
                               const unlisten = await listen<string>("email-dispatch-event", (event) => {
                                 const msg = event.payload;
                                 let type: 'info' | 'success' | 'error' = 'info';
-                                if (msg.includes("✅")) type = 'success';
+                                if (msg.includes("✅")) { type = 'success'; setEmailsSentCount(prev => prev + 1); }
                                 if (msg.includes("❌")) type = 'error';
                                 setEmailDispatchLogs(prev => [...prev, { msg, type }]);
                               });
                               
+                              // 3. Executa o Motor Rust no fundo
                               try {
                                 const resposta = await invoke<string>("process_and_send_emails", { 
                                   userEmail: email, userPass: gmailPassword.replace(/\s+/g, ''), geminiKey: geminiKey.trim(), offlineDaysThreshold, sendToHostOffline, sendToPrinterOffline, isDevMode, data: results 
                                 });
-                                alert(`✅ SUCESSO!\n\n${resposta}`);
-                              } catch (err) { setEmailDispatchLogs(prev => [...prev, { msg: `❌ ERRO: ${err}`, type: 'error' }]);
+                                setEmailDispatchLogs(prev => [...prev, { msg: `✅ SUCESSO GERAL: ${resposta}`, type: 'success' }]);
+                              } catch (err) { setEmailDispatchLogs(prev => [...prev, { msg: `❌ ERRO CRÍTICO: ${err}`, type: 'error' }]);
                               } finally { setIsSendingEmail(false); if (typeof unlisten === 'function') unlisten(); }
                             }}
-                            className={`w-full py-4 rounded-xl font-extrabold shadow-lg transition-transform flex items-center justify-center gap-2 text-sm relative z-10 ${(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : (isDevMode ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white hover:scale-[1.02] active:scale-95' : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:scale-[1.02] active:scale-95')}`}
+                            className={`w-full py-4 rounded-xl font-extrabold shadow-lg transition-transform flex items-center justify-center gap-2 text-sm relative z-10 ${(!sendToHostOffline && !sendToPrinterOffline) || !gmailPassword || isSendingEmail || dispatchPreview.emails === 0 || (syncStats.missingEmails > 0 && !acknowledgedMissing) ? 'bg-slate-200 text-slate-400 cursor-not-allowed pointer-events-none' : (isDevMode ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white hover:scale-[1.02] active:scale-95' : 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:scale-[1.02] active:scale-95')}`}
                           >
                             {isSendingEmail ? <RefreshCw size={18} className="animate-spin" /> : <Send size={18}/>} 
                             {isSendingEmail ? 'Disparando...' : (isDevMode ? `TESTE DEV: Enviar ${dispatchPreview.emails} E-mails` : `Processar ${dispatchPreview.emails} Disparos`)}
@@ -860,31 +1029,108 @@ export default function App() {
                   </motion.div>
                 )}
 
+                {/* --- TELA DE DISPARO DE E-MAILS (NOVA E MAGNÍFICA) --- */}
+                {currentScreen === "sending_emails" && (
+                  <motion.div key="sending_emails" initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="flex flex-col h-[600px] w-full relative">
+                    
+                    {/* Área com Scroll (Permite crescer sem empurrar o botão para fora) */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 shrink-0 log-scroll-view">
+                      <div className="w-full max-w-xl mx-auto space-y-6">
+
+                        {/* Cabeçalho Animado */}
+                      <div className="text-center space-y-3">
+                        <div className="flex justify-center mb-6">
+                          <div className="relative">
+                            <AnimatePresence mode="wait">
+                              {isSendingEmail ? (
+                                <motion.div key="sending" exit={{scale:0}} className="p-5 bg-indigo-100 rounded-full shadow-inner border border-indigo-200">
+                                  <Send size={48} className="text-indigo-600 animate-pulse" />
+                                </motion.div>
+                              ) : (
+                                <motion.div key="done" initial={{scale:0}} animate={{scale:1}} className="p-5 bg-emerald-100 rounded-full shadow-inner border border-emerald-200">
+                                  <CheckCircle2 size={48} className="text-emerald-600" />
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        </div>
+                        <h2 className="text-3xl font-black text-slate-800 tracking-tight">{isSendingEmail ? "Disparando Notificações..." : "Processo Concluído!"}</h2>
+                        <p className="text-sm font-semibold text-slate-500 max-w-sm mx-auto">
+                          {isSendingEmail ? "A Inteligência Artificial está redigindo, formatando e enviando os e-mails aos clientes." : "Todos os e-mails da fila foram processados e enviados com sucesso."}
+                        </p>
+                      </div>
+
+                      {/* Barra de Progresso Inteligente */}
+                      <div className="bg-white/70 backdrop-blur-md p-6 rounded-3xl shadow-sm border border-slate-200">
+                        <div className="flex justify-between items-end mb-3">
+                          <div>
+                            <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Status de Envio</span>
+                            <div className="text-2xl font-black text-indigo-600 leading-none mt-1">{emailsSentCount} <span className="text-base text-slate-400 font-bold">/ {isDevMode ? '4' : dispatchPreview.emails}</span></div>
+                          </div>
+                          <span className="text-sm font-black text-indigo-500">{Math.round((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100)}%</span>
+                        </div>
+                        <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner relative">
+                          <motion.div className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 rounded-full" animate={{ width: `${Math.min((emailsSentCount / (isDevMode ? 4 : (dispatchPreview.emails || 1))) * 100, 100)}%` }} transition={{ ease: "linear", duration: 0.4 }} />
+                        </div>
+
+                        {/* --- EXIBIÇÃO INTEGRADA DO ÚLTIMO LOG DE DISPARO (NOVA E CLEAN) --- */}
+                        {emailDispatchLogs.length > 0 && (
+                          <div className="mt-4 pt-3 border-t border-slate-200/60 font-mono text-[11px] leading-relaxed truncate text-left">
+                            <span className="text-blue-500 mr-2 shrink-0 mt-[1px] font-sans font-extrabold">{'>'}</span>
+                            <span className={`inline ${emailDispatchLogs[emailDispatchLogs.length - 1].type === 'error' ? 'text-red-600 font-bold' : (emailDispatchLogs[emailDispatchLogs.length - 1].type === 'success' ? 'text-emerald-700' : 'text-slate-700')}`}>
+                              {/* Apenas o último log faz a animação de máquina de escrever se estiver disparando */}
+                              {isSendingEmail ? <Typewriter text={emailDispatchLogs[emailDispatchLogs.length - 1].msg} /> : emailDispatchLogs[emailDispatchLogs.length - 1].msg}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* --- TODO O BLOCO DElogs (DETAILS) FOI REMOVIDO DAQUI --- */}
+
+                      </div>
+                    </div>
+
+                    {/* Botão de Retorno Fixo na Base (Always visible e sem sobreposição) */}
+                    <AnimatePresence>
+                      {!isSendingEmail && (
+                        <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} className="flex justify-center p-6 pt-3 shrink-0 border-t border-slate-200/60 relative z-10">
+                          <motion.button whileHover="hover" onClick={() => setCurrentScreen("main_panel")} className="px-10 py-3.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold shadow-xl transition-transform hover:scale-[1.02] active:scale-95 flex items-center gap-2">
+                            <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div>
+                            Voltar ao Painel Principal
+                          </motion.button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                  </motion.div>
+                )}
+
                 {/* --- TELA DE CONFIGURAÇÕES (HUB DE CARDS) --- */}
                 {currentScreen === "settings" && (
                   <motion.div key="settings" initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="flex flex-col h-[600px] w-full relative">                    <div className="relative flex items-center justify-center mb-8 mt-2">
-                      <button onClick={() => setCurrentScreen("main_panel")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg">
-                        <ArrowLeft size={18} className="mr-1.5" /> Voltar
-                      </button>
+                      <motion.button whileHover="hover" onClick={() => setCurrentScreen("main_panel")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                        <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div> Voltar
+                      </motion.button>
                       <h2 className="text-xl font-extrabold text-slate-800">Centro de Configurações</h2>
                     </div>
 
                     {/* OS CARDS INTELIGENTES (Em grid para ocupar a janela média-grande) */}
                     <div className="grid grid-cols-2 gap-6 flex-1">
                       
-                      {/* CARD 1: ASSINATURA DE E-MAIL (100% Clicável) */}
+                      {/* CARD 1: ASSINATURA DE E-MAIL (100% Clicável) com Watermark de Usuário */}
                       <motion.div 
                         onClick={() => setCurrentScreen("settings_signature")}
                         whileHover={{ y: -3, boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.05)" }} 
-                        className="bg-white/70 p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-col items-start text-left transition-all cursor-pointer hover:border-indigo-400 hover:bg-white group"
+                        className="bg-white/70 p-5 rounded-3xl border border-slate-200 shadow-sm flex flex-col items-start text-left transition-all relative overflow-hidden cursor-pointer hover:border-indigo-400 hover:bg-white group"
                       >
                         <div className="p-2.5 bg-blue-100 rounded-2xl mb-3 border border-blue-200/70 transition-colors group-hover:bg-blue-50"><User size={20} className="text-blue-600"/></div>
                         <h3 className="font-extrabold text-slate-800 text-base transition-colors group-hover:text-indigo-700">Assinatura Corporativa</h3>
                         <p className="text-xs text-slate-600 mt-1 mb-4 leading-relaxed flex-1">Configure seus dados pessoais para montar a assinatura no final dos e-mails.</p>
                         
-                        <div className="text-xs font-bold text-indigo-600 flex items-center gap-1.5 transition-all p-2 rounded-lg group-hover:bg-indigo-50 group-hover:gap-2">
-                          Acessar Configurações <ChevronRight size={14}/>
-                        </div>
+                        {/* O texto redundante foi removido */}
+                        
+                        {/* Adicionar o watermark de usuário grande e opaco */}
+                        <User size={60} className="absolute -bottom-4 -right-4 text-blue-100 opacity-70 rotate-[-15deg] transition-transform duration-500 group-hover:scale-110 group-hover:-rotate-12"/>
                       </motion.div>
 
                       {/* CARD 2: AUTENTICAÇÃO E IA (100% Clicável) */}
@@ -897,9 +1143,7 @@ export default function App() {
                         <h3 className="font-extrabold text-slate-800 text-base transition-colors group-hover:text-emerald-700">Autenticação e Motores IA</h3>
                         <p className="text-xs text-slate-600 mt-1 mb-4 leading-relaxed flex-1 relative z-10">Gerencie a Senha de App do Gmail e a chave da API do Google Gemini.</p>
                         
-                        <div className="text-xs font-bold text-emerald-600 flex items-center gap-1.5 transition-all p-2 rounded-lg group-hover:bg-emerald-50 group-hover:gap-2 relative z-10">
-                          Gerenciar Chaves <ChevronRight size={14}/>
-                        </div>
+                        {/* O texto redundante foi removido */}
                         
                         {/* Efeito extra: o robô dá um leve zoom e gira ao passar o mouse no card! */}
                         <Bot size={60} className="absolute -bottom-4 -right-4 text-emerald-100 opacity-70 rotate-[-15deg] transition-transform duration-500 group-hover:scale-110 group-hover:-rotate-12"/>
@@ -913,9 +1157,9 @@ export default function App() {
                 {currentScreen === "settings_signature" && (
                   <motion.div key="settings_signature" initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="flex flex-col h-[600px] w-full relative">
                     <div className="relative flex items-center justify-center mb-8 shrink-0 mt-2">
-                      <button onClick={() => setCurrentScreen("settings")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg">
-                        <ArrowLeft size={18} className="mr-1.5" /> Voltar
-                      </button>
+                      <motion.button whileHover="hover" onClick={() => setCurrentScreen("settings")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                        <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div> Voltar
+                      </motion.button>
                       <h2 className="text-xl font-extrabold text-slate-800 tracking-tight flex items-center gap-2.5"><User size={18} className="text-blue-500"/> Configuração de Assinatura</h2>
                     </div>
 
@@ -924,7 +1168,7 @@ export default function App() {
                       <div className="space-y-1"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Nome Completo</label><input type="text" value={profileName} onChange={e => setProfileName(e.target.value)} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ex: Daniel Antonio da Cunha" /></div>
                       <div className="space-y-1"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Cargo</label><input type="text" value={profileTitle} onChange={e => setProfileTitle(e.target.value)} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ex: Técnico P&B Sênior" /></div>
                       <div className="space-y-1"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Departamento</label><input type="text" value={profileDept} onChange={e => setProfileDept(e.target.value)} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="Ex: Departamento de Projetos" /></div>
-                      <div className="space-y-1"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Celular Corporativo</label><input type="text" value={profilePhone} onChange={e => setProfilePhone(formatPhone(e.target.value))} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="+55 11 99999-9999" /></div>
+                      <div className="space-y-1"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Celular Corporativo</label><input type="text" value={profilePhone} onChange={e => setProfilePhone(formatPhone(e.target.value))} className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="11 99999-9999" /></div>
                       <button onClick={async () => {
                         try {
                           await invoke("save_user_profile", { profile: { email, name: profileName, title: profileTitle, department: profileDept, phone: profilePhone } });
@@ -941,20 +1185,39 @@ export default function App() {
                 {currentScreen === "settings_auth" && (
                   <motion.div key="settings_auth" initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="flex flex-col h-[600px] w-full relative">
                     <div className="relative flex items-center justify-center mb-8 shrink-0 mt-2">
-                      <button onClick={() => setCurrentScreen("settings")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg">
-                        <ArrowLeft size={18} className="mr-1.5" /> Voltar
-                      </button>
+                      <motion.button whileHover="hover" onClick={() => setCurrentScreen("settings")} className="absolute left-0 flex items-center text-slate-400 hover:text-indigo-600 font-bold text-sm transition-colors px-2 py-1 rounded-lg hover:bg-indigo-50">
+                        <motion.div className="mr-1.5" variants={{ hover: { x: [0, -2, 2, -2, 2, 0], transition: { duration: 0.5, repeat: Infinity, repeatDelay: 0.5 } } }}><ArrowLeft size={18} /></motion.div> Voltar
+                      </motion.button>
                       <h2 className="text-xl font-extrabold text-slate-800 tracking-tight flex items-center gap-2.5"><Lock size={18} className="text-emerald-500"/> Chaves e Segurança</h2>
                     </div>
 
                     <div className="flex-1 bg-white/60 p-8 rounded-3xl border border-slate-200 shadow-sm overflow-y-auto space-y-5">
-                      <p className="text-sm text-slate-600 mb-6 leading-relaxed">Gerencie as suas credenciais de autenticação CID do Gmail e o motor de geração orgânica IA Gemini. Essas chaves nascem ocultas e bloqueadas por segurança. Use o ícone do lápis para editar.</p>
+                      <p className="text-sm text-slate-600 mb-4 leading-relaxed">Gerencie as suas credenciais de autenticação CID do Gmail e o motor de geração orgânica IA Gemini. Essas chaves nascem ocultas e bloqueadas por segurança. Use o ícone do lápis para editar.</p>
                       
+                      {/* --- PASSO A PASSO (TUTORIAL) --- */}
+                      <details className="group mb-6 border border-blue-200 bg-blue-50/50 rounded-xl overflow-hidden shadow-sm">
+                        <summary className="text-xs font-bold text-blue-700 cursor-pointer list-none flex items-center justify-between p-3 hover:bg-blue-100/50 transition-colors">
+                          <span className="flex items-center gap-2"><AlertCircle size={16}/> Como gerar minha Senha de App do Gmail?</span>
+                          <ChevronRight size={16} className="transition-transform group-open:rotate-90"/>
+                        </summary>
+                        <div className="p-4 pt-2 border-t border-blue-100 text-[11px] text-slate-700 space-y-2 leading-relaxed bg-white/60">
+                          <p>O Google exige uma senha especial para liberar que o nosso sistema dispare e-mails em seu nome (<b>seu_email@cusa.canon.com</b>).</p>
+                          <ol className="list-decimal pl-4 space-y-1.5 font-medium mt-2">
+                            <li>Acesse as configurações da sua conta Google no navegador.</li>
+                            <li>Vá na aba <b>Segurança</b> (menu lateral esquerdo).</li>
+                            <li>Na barra de pesquisa do topo, busque por <b>Senhas de App</b>.</li>
+                            <li>Digite um nome para o app (ex: "NDD Recovery") e clique em <b>Criar</b>.</li>
+                            <li>O Google vai gerar uma senha de 16 letras em uma tela amarela.</li>
+                            <li>Copie essas letras e cole no campo abaixo!</li>
+                          </ol>
+                        </div>
+                      </details>
+
                       <div className="space-y-1">
                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Senha de App CID (Gmail)</label>
                         <div className="relative border border-slate-200 rounded-xl bg-slate-50 flex items-center pr-3 group focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-600 transition-all">
                           <Lock className="absolute left-3 text-slate-400" size={16} />
-                          <input type={isGmailPassVisible ? "text" : "password"} value={gmailPassword} onChange={e => setGmailPassword(e.target.value)} readOnly={!isEditingGmailPass} className="flex-1 pl-9 p-3 bg-transparent rounded-xl text-sm outline-none transition-all font-mono placeholder:font-sans placeholder:text-slate-300" placeholder="abcd efgh ijkl mnop" />
+                          <input type={isGmailPassVisible ? "text" : "password"} value={gmailPassword} onChange={e => setGmailPassword(e.target.value)} readOnly={!isEditingGmailPass} className="flex-1 pl-9 p-3 bg-transparent rounded-xl text-sm outline-none transition-all font-mono placeholder:font-sans placeholder:text-slate-400" placeholder="Digite sua senha de app aqui" />
                           <div className="flex items-center gap-1.5 shrink-0 ml-2">
                             {!isEditingGmailPass ? (
                               <button onClick={() => setIsEditingGmailPass(true)} className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="Editar este campo"><Pencil size={14} /></button>
@@ -1007,6 +1270,38 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* --- MODAL DE ALERTA CUSTOMIZADO (Identidade Visual do App) --- */}
+      <AnimatePresence>
+        {appAlert.visible && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 pointer-events-auto">
+            <motion.div initial={{ scale: 0.9, opacity: 0, y: 10 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.9, opacity: 0, y: 10 }} className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-sm overflow-hidden flex flex-col">
+              
+              {/* Cabeçalho do Pop-up */}
+              <div className={`p-5 flex items-center gap-3 ${appAlert.type === 'warning' ? 'bg-amber-50 border-b border-amber-100/60' : appAlert.type === 'success' ? 'bg-emerald-50 border-b border-emerald-100/60' : 'bg-red-50 border-b border-red-100/60'}`}>
+                <div className={`p-2.5 rounded-2xl shrink-0 ${appAlert.type === 'warning' ? 'bg-amber-100 text-amber-600' : appAlert.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+                  {appAlert.type === 'warning' ? <AlertTriangle size={24} /> : appAlert.type === 'success' ? <CheckCircle2 size={24} /> : <AlertCircle size={24} />}
+                </div>
+                <h3 className={`font-extrabold text-lg ${appAlert.type === 'warning' ? 'text-amber-800' : appAlert.type === 'success' ? 'text-emerald-800' : 'text-red-800'}`}>{appAlert.title}</h3>
+              </div>
+              
+              {/* Corpo da Mensagem */}
+              <div className="p-6 text-slate-600 text-sm leading-relaxed text-center font-medium">
+                {appAlert.message}
+              </div>
+              
+              {/* Botão de Ação */}
+              <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-center">
+                <button onClick={() => setAppAlert({...appAlert, visible: false})} className={`w-full py-3 text-white rounded-xl font-bold transition-transform hover:scale-[1.02] active:scale-95 shadow-md ${appAlert.type === 'warning' ? 'bg-amber-500 hover:bg-amber-600' : appAlert.type === 'success' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-slate-800 hover:bg-slate-900'}`}>
+                  Entendi
+                </button>
+              </div>
+
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </main>
   );
 }

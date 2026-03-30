@@ -1,0 +1,12 @@
+Your keys were generated successfully!
+
+Private: (Keep it secret!)
+dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5QU5LaHpGMXNYZDZHZHRTN3VjQmVxRm00bFNubzdiY2ptais4ZWhMWXV1OEFBQkFBQUFBQUFBQUFBQUlBQUFBQUdjVW1FeTlmdVhVSmdjSDRaZEt3K1ZET25rYXYrRzhNT2VJQmFuVUgvVDZZcGlRMXY1SVdwZVRCekRzQ0c3Wnp0VnFwWHVFbHVDbVBmZ1dvZkkwZEpMWjk1V1RZaVl4NHFmaDY0c1VoOVdFZ2k3aDJxeEQ3aHVqcXF1SXBQVFFKaUxCU2FRYzFIS0E9Cg==
+
+Public:
+dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY4RkJBQUJFMDI3ODRCRjUKUldUMVMzZ0N2cXI3YURldDR3a2ZtNXlzMHo5RzdaVGlQM3lzQjFhRUt0NXU0SHUrVmc4SjFqTTAK        
+
+Environment variables used to sign:
+- `TAURI_SIGNING_PRIVATE_KEY`: String of your private key
+- `TAURI_SIGNING_PRIVATE_KEY_PATH`: Path to your private key file
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`:  Your private key password (optional if key has no password)
